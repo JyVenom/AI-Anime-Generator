@@ -123,18 +123,13 @@ def generate_images():
                 "Authorization": f"Bearer {stability_api_key}"
             },
             json={
-                "text_prompts": [
-                    {
-                        "text": prompt
-                    }
-                ],
-                # "clip_guidance_preset": "FAST_BLUE",  # not sure what this is yet, need to do further research
+                "text_prompts": [{"text": prompt}],
+                "clip_guidance_preset": "FAST_BLUE",  # not sure what this is yet, need to do further research
                 "height": 512,
                 "width": 512,
                 "samples": 1,
                 "steps": 10,
-                # high-res params
-                # "height": 576,
+                # "height": 576,  # high-res params
                 # "width": 1024,
                 # "samples": 1,
                 # "steps": 50,
