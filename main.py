@@ -2,14 +2,15 @@ import base64
 import math
 import os
 import shutil
-from tkinter import Label, Entry, Tk, Button, filedialog, Listbox, END
+from tkinter import Label, Entry, Tk, Button, filedialog, Listbox, END, IntVar, Radiobutton
 
 import cv2
 import moviepy.editor as mpe
 import openai
 import requests
-from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
-from ibm_watson import TextToSpeechV1
+from gtts import gTTS
+from moviepy.video.VideoClip import TextClip
+from moviepy.video.tools.subtitles import SubtitlesClip
 from pydub import AudioSegment
 
 # setup
@@ -23,32 +24,30 @@ if openai_api_key is None:
     raise Exception("Missing OpenAI API Key")
 openai.api_key = openai_api_key
 
-stability_engine_id = "stable-diffusion-v1-5"
+stability_engine_id = "stable-diffusion-v1-5"  # "stable-diffusion-v1-5" or "stable-diffusion-512-v2-1"
 stability_api_host = os.getenv('API_HOST', 'https://api.stability.ai')
 stability_api_key = os.getenv("STABILITY_API_KEY")
 if stability_api_key is None:
     raise Exception("Missing Stability API key")
 
-ibm_api_key = os.getenv("IBM_API_KEY")
-if ibm_api_key is None:
-    raise Exception("Missing IBM API Key")
-authenticator = IAMAuthenticator(ibm_api_key)
-tts = TextToSpeechV1(authenticator=authenticator)
-tts.set_service_url(
-    'https://api.us-south.text-to-speech.watson.cloud.ibm.com/instances/786f78a9-376d-4759-a6a5-bcf110898126')
-
 # variables
 scenes = []
 images = []
 num_scenes = 0
+language = 'English'
 
 
 # functions
 def generate():
     # get user input
     global num_scenes
-    num_scenes = entry1.get()
+    global language
+    num_scenes = entry1.get()  # for some reason 4 is fine but 5 is not (it doesn't have two spaces between the scenes)
     subject = entry2.get()
+    if v.get() == 0:
+        language = "English"
+    else:
+        language = "Chinese"
 
     # set up directories
     if os.path.exists(data_dir):
@@ -58,35 +57,36 @@ def generate():
         shutil.rmtree(output_dir)
     os.mkdir(output_dir)
 
-    print("Generating Story...")
+    print(f'Generating {num_scenes} scenes about {subject} in {language}')
     generate_scenes(subject)
-    print("Generating Pictures...")
+    if language != 'English':
+        print(f'Translating story into {language}')
+        translate_scenes()
+    print("Generating Images...")
     generate_images()
     print("Generating Audio...")
     generate_audio()
-    print("Stitching Together Video...")
+    print("Generating Video...")
     create_video()
-    print("Done. Exiting...")
+    print("Done!")
     root.destroy()
 
 
 def generate_scenes(subject):
-    prompt = f'Generate a manga story line with {num_scenes} scenes. Separate each scene with a new line. The manga ' \
-             f'will have 4 characters, and be about {subject}. For each scene, give me both a description of the ' \
-             f'scene in natural language and a prompt I could use on a text to image ai to generate the scene. When ' \
-             f'writing the image prompt, only use keywords. Make it specific. Make sure to make a prompt that ' \
-             f'matches the scene and is in anime style. Do not use periods in the prompt, instead separating the ' \
-             f'keywords with commas. Use only keywords. No need for "joiner words" that make the sentence readable. ' \
-             f'Add ", anime style" to the end of the prompt. Answer exactly in the form of "Scene 1: [content]" and ' \
-             f'"Prompt: [content]" replacing [content] with the text you generate and with exactly two new lines ' \
-             f'between scenes and prompts'
+    prompt = f'Generate a manga story line with {num_scenes} scenes. The manga will have 4 characters, and be about ' \
+             f'{subject}. For each scene, give me both a description of the scene in natural language and a prompt I ' \
+             f'could use on a text-to-image AI to generate the scene. When writing the image prompt, only use ' \
+             f'keywords. Make it specific. Make sure to make a prompt that matches the scene and is in anime style. ' \
+             f'Do not use periods in the prompt, instead separating the keywords with commas. No need for "joiner ' \
+             f'words" that make the sentence readable. Add ", anime style" to the end of the prompt. Separate each ' \
+             f'scene and its corresponding prompt with exactly two new line. Also separate each prompt and the next ' \
+             f'scene with exactly two new lines. Answer exactly in the form of "Scene 1: [content] \\n\\n Prompt: ' \
+             f'[content] \\n\\n Scene 2: [content] \\n\\n Prompt 2: [content]" and so on, replacing [content] with ' \
+             f'the text you generate. Do not include the quotation marks. Do not include new lines after the last line.'
     print(f'Prompt: {prompt}')
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
-        messages=[
-            # {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ]
+        messages=[{"role": "user", "content": prompt}]
     )
     print(f'GPT Response: {response}')
     sentences = response['choices'][0]['message']['content'].split('\n\n')
@@ -103,13 +103,23 @@ def generate_scenes(subject):
     print(f'Image prompts: {images}')
 
 
+def translate_scenes():
+    for i, scene in enumerate(scenes):
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": f'Translate the following scene into {language}: {scene}'}]
+        )
+        translation = response['choices'][0]['message']['content']
+        print(f'Translation: {translation}')
+        scenes[i] = translation
+
+
 def generate_images():
     for i, prompt in enumerate(images):
         response = requests.post(
             f"{stability_api_host}/v1/generation/{stability_engine_id}/text-to-image",
             headers={
                 "Content-Type": "application/json",
-                # "Accept": "application/json",
                 "Authorization": f"Bearer {stability_api_key}"
             },
             json={
@@ -118,12 +128,16 @@ def generate_images():
                         "text": prompt
                     }
                 ],
-                # "cfg_scale": 7,
-                "clip_guidance_preset": "FAST_BLUE",
+                # "clip_guidance_preset": "FAST_BLUE",  # not sure what this is yet, need to do further research
                 "height": 512,
                 "width": 512,
                 "samples": 1,
                 "steps": 10,
+                # high-res params
+                # "height": 576,
+                # "width": 1024,
+                # "samples": 1,
+                # "steps": 50,
                 "style_preset": "anime"
             },
         )
@@ -133,7 +147,6 @@ def generate_images():
 
         print(f'StabilityAI Response: {response}')
         data = response.json()
-        print(f'Data: {data}')
 
         with open(os.path.join(data_dir, f"frame_{i:04}.png"), "wb") as f:
             f.write(base64.b64decode(data["artifacts"][0]["base64"]))
@@ -141,16 +154,13 @@ def generate_images():
 
 def generate_audio():
     for i, caption in enumerate(scenes):
-        voice = 'en-US_AllisonV3Voice'
-        accept = 'audio/mp3'
+        voice = "en"
+        if language == 'Chinese':
+            voice = 'zh-CN'
 
-        # Synthesize speech from a text input
-        text = caption
-        response = tts.synthesize(text, voice=voice, accept=accept).get_result()
-
-        # Save the audio output to a file
-        with open(os.path.join(data_dir, f'audio_{i:04}.mp3'), 'wb') as audio_file:
-            audio_file.write(response.content)
+        voiceover = gTTS(text=caption, lang=voice, slow=False)
+        voiceover.save(os.path.join(data_dir, f'audio_{i:04}.mp3'))
+        print(f'Generated audio for scene {i}')
 
 
 def create_video():
@@ -183,9 +193,14 @@ def create_video():
         video = mpe.VideoFileClip(scene_path)
         audio = mpe.AudioFileClip(audio_path)
         video = video.set_audio(audio)
-        subs = mpe.TextClip(scenes[i])
-        video = mpe.CompositeVideoClip([video, subs.set_position(('center', 'bottom'))])
-        video = video.set_duration(video.duration)
+
+        # add subtitles to scene clips
+        subs = [((0, video.duration), scenes[i])]
+        generator = lambda txt: TextClip(txt, align='center', method='caption', size=(video.w, None)).set_position(
+            ('center', 'bottom')).set_duration(video.duration)
+        subtitles = SubtitlesClip(subs, generator)
+        video = mpe.CompositeVideoClip([video, subtitles])
+
         video.write_videofile(os.path.join(data_dir, f"scene_{i:04}.mp4"))
 
     # concatenate scene clips
@@ -209,8 +224,6 @@ def validate_entry(text):
 
 def open_file_dialog():
     filenames = filedialog.askopenfilenames(initialdir="/", title="Select Files")
-    # print the number of files selected
-    # print(len(filenames), "files selected:", filenames)
 
     # make a clean data folder
     if os.path.exists("user_data/"):
@@ -236,14 +249,25 @@ label2.grid(row=1, column=0, padx=10, pady=10)
 entry2 = Entry(root, validate="key")
 entry2.grid(row=1, column=1, padx=10, pady=10)
 
+label3 = Label(root, text="Language:")
+label3.grid(row=2, column=0, padx=10, pady=10)
+
+v = IntVar()
+
+rb1 = Radiobutton(root, text="English", variable=v, value=0)
+rb1.grid(row=2, column=1, padx=10, pady=10)
+
+rb2 = Radiobutton(root, text="Chinese", variable=v, value=1)
+rb2.grid(row=2, column=2, padx=10, pady=10)
+
 listbox = Listbox(root)
-listbox.grid(row=2, column=0)
+listbox.grid(row=3, column=0)
 
 button = Button(root, text="Upload Files", command=open_file_dialog)
-button.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="W")
+button.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="W")
 
 button = Button(root, text="Send", command=generate)
-button.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="W")
+button.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="W")
 
 # main
 if __name__ == '__main__':
